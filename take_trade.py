@@ -1,3 +1,6 @@
+import os
+import sys
+import io
 import ccxt
 import pandas as pd
 import ta
@@ -8,6 +11,8 @@ import math
 import json
 import schedule
 import traceback
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 from db_config import Database
 from dotenv import load_dotenv
@@ -39,7 +44,6 @@ db_conn = Database(
 print_lock = threading.Lock()
 stop_event = threading.Event()  # Global stop signal
 
-API_URL = os.getenv("SAVE_TRADE_API")
 # Trading parameters
 leverage = -10
 multiplier= 1.5
@@ -138,24 +142,32 @@ def get_open_position_counts(exchange, all_symbols):
 
 def issueNumberOfTrade(acc_bal):
     thresholds = [
-        (10000, 5),
-        (5000, 5),
-        (1000, 5),
-        (500, 5),
-        (150, 5),
-        (0, 5)
+        (10000, 20),
+        (5000, 20),
+        (1000, 20),
+        (500, 20),
+        (150, 20),
+        (0, 20)
     ]
     
     for limit, trades in thresholds:
         if acc_bal >= limit:
             return trades
         
-def calculateIntialAmount(account_balance, leverage= 5, divider= 5.0):
+# def calculateIntialAmount(account_balance, leverage= 5, divider= 5.0):
+#     MAX_NUMBER_TRADE = issueNumberOfTrade(account_balance)
+#     FIRST_ENTRY = round_to_sig_figs((account_balance / divider), 2)
+#     FIRST_ENTRY_PER_TRADE = round_to_sig_figs((FIRST_ENTRY / MAX_NUMBER_TRADE), 2)
+#     INITIAL_AMOUNT = FIRST_ENTRY_PER_TRADE * leverage
+#     return FIRST_ENTRY_PER_TRADE
+
+def calculateIntialAmount(account_balance, leverage= 10, divider= 12.5):
     MAX_NUMBER_TRADE = issueNumberOfTrade(account_balance)
     FIRST_ENTRY = round_to_sig_figs((account_balance / divider), 2)
     FIRST_ENTRY_PER_TRADE = round_to_sig_figs((FIRST_ENTRY / MAX_NUMBER_TRADE), 2)
-    INITIAL_AMOUNT = FIRST_ENTRY_PER_TRADE * leverage
-    return FIRST_ENTRY_PER_TRADE
+    INITIAL_AMOUNT = FIRST_ENTRY_PER_TRADE * abs(leverage)
+    # print(f"{account_balance} -- FIRST_ENTRY {FIRST_ENTRY} -- FIRST_ENTRY_PER_TRADE {FIRST_ENTRY_PER_TRADE} -- INITIAL_AMOUNT {INITIAL_AMOUNT}")
+    return INITIAL_AMOUNT
 
 def check_equity_usage(balance):
     total = float(balance.get('total', 0))
@@ -179,16 +191,16 @@ def main_job(exchange, user_cred_id, token, verify):
         if stop_event.is_set():
             return
 
-        signal = fetch_single_trade_signal()
+        signal = fetch_single_trade_signal(db_conn)
         if not signal:
-            thread_safe_print("ℹ️ No active signals available.")
+            # thread_safe_print("ℹ️ No active signals available.")
             return
         
         trade_signal_id = signal['id']
         symbol = signal['symbol_pair']
         side = signal['trade_type']
         trail_thresh = 0.20 # 10% default
-        profit_target_distance = 0.12 # 60% default
+        profit_target_distance = 0.01 # 60% default
 
         usdt_balances = exchange.fetch_balance({'type': 'swap'}).get('USDT', {})
         usdt_balance_free = usdt_balances.get('free', 0)
@@ -198,11 +210,11 @@ def main_job(exchange, user_cred_id, token, verify):
             return
         
         time.sleep(2)
-        MAX_NO_SELL_TRADE = issueNumberOfTrade(usdt_balance_total) + 3
+        MAX_NO_SELL_TRADE = issueNumberOfTrade(usdt_balance_total)
         MAX_NO_BUY_TRADE = 2
 
 
-        position_count = get_side_count(user_cred_id, 0, side)
+        position_count = get_side_count(db_conn, user_cred_id, 0, side)
         # print("Position Count: ", position_count)
         
         if (side == 0 and position_count >= MAX_NO_BUY_TRADE):
@@ -212,16 +224,16 @@ def main_job(exchange, user_cred_id, token, verify):
             pass
             # print(f"❌ Max number of sell trades reached ({position_count})!")
         else:
-            if has_open_trade(user_cred_id, symbol):
-                print(f"⚠️ Trade {symbol} already taken for {user_cred_id}")
+            if has_open_trade(db_conn, user_cred_id, symbol):
+                # print(f"⚠️ Trade {symbol} already taken for {user_cred_id}")
                 return
 
             if has_open_position(exchange, symbol):
-                print(f"⚠️ Skipping {symbol} — already has an open position on exchange")
+                # print(f"⚠️ Skipping {symbol} — already has an open position on exchange")
                 return
 
             # ✅ Proceed with trade execution
-            thread_safe_print(f"✅ {verify if hasattr(exchange, 'id') else 'Exchange'} → Processing signal: {signal}")
+            # thread_safe_print(f"✅ {verify if hasattr(exchange, 'id') else 'Exchange'} → Processing signal: {signal}")
             
             side_n_str = "buy" if side == 0 else "sell"
             usdt_amount = calculateIntialAmount(usdt_balance_total, leverage)
@@ -237,6 +249,7 @@ def main_job(exchange, user_cred_id, token, verify):
                 take_trade_data = {
                     "strategy_type": "initial",
                     "user_cred_id": user_cred_id,
+                    "child_to": 0,
                     "trade_signal": trade_signal_id,
                     "order_id": market_order_id,
                     "symbol": symbol,
@@ -249,6 +262,7 @@ def main_job(exchange, user_cred_id, token, verify):
                     "cum_close_distance": 0.5,
                     "trade_done": 0,
                     "re_entry_count": -1,
+                    "hedged": 0,
                     "hedge_start": 3,
                     "status": 1
                 }
@@ -290,7 +304,7 @@ def run_exchanges_in_batch(batch):
 
 
 def run_all():
-    credentials = get_all_credentials_with_exchange_info()  # JOINed data
+    credentials = get_all_credentials_with_exchange_info(db_conn)  # JOINed data
     if not credentials:
         thread_safe_print("⚠️ No API credentials found in the database. Exiting...")
         return

@@ -1,11 +1,12 @@
 import os
 import sys
+import io
 import time
 import requests
 import datetime
 import json
 from collections import defaultdict
-import redis.asyncio as redis
+# import redis.asyncio as redis
 import asyncio
 import threading
 from threading import Lock
@@ -15,6 +16,9 @@ import math
 import schedule
 import traceback
 import ccxt
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 
 from db_config import Database
 from dotenv import load_dotenv
@@ -74,52 +78,52 @@ def make_json_safe(obj):
 
     
 # 🔁 Publisher (sync part) – reads redis_notify & publishes
-async def db_to_redis_publisher():
-    r = redis.Redis(host="localhost", port=6379, decode_responses=True)
+# async def db_to_redis_publisher():
+#     r = redis.Redis(host="localhost", port=6379, decode_responses=True)
 
-    while not stop_event.is_set():
-        try:
-            conn = db_conn.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM redis_notify WHERE published = 0 ORDER BY id ASC LIMIT 20")
-            rows = cursor.fetchall()
+#     while not stop_event.is_set():
+#         try:
+#             conn = db_conn.get_connection()
+#             cursor = conn.cursor()
+#             cursor.execute("SELECT * FROM redis_notify WHERE published = 0 ORDER BY id ASC LIMIT 20")
+#             rows = cursor.fetchall()
 
-            for row in rows:
-                if row["action_type"] == "delete":
-                    # Row is already deleted, so just send minimal info
-                    message = {
-                        "op": "delete",
-                        "user_cred_id": row["user_cred_id"],
-                        "row": { "id": row["row_id"] }  # no other fields needed
-                    }
-                else:
-                    data = fetch_row(db_conn, row["table_name"], row["row_id"])
-                    if not data:
-                        continue
+#             for row in rows:
+#                 if row["action_type"] == "delete":
+#                     # Row is already deleted, so just send minimal info
+#                     message = {
+#                         "op": "delete",
+#                         "user_cred_id": row["user_cred_id"],
+#                         "row": { "id": row["row_id"] }  # no other fields needed
+#                     }
+#                 else:
+#                     data = fetch_row(db_conn, row["table_name"], row["row_id"])
+#                     if not data:
+#                         continue
 
-                    key = get_cache_key(row["user_cred_id"], data["status"])
-                    cache_list = trade_signal_cache.get(key, [])
-                    existing_row = next((r for r in cache_list if r["id"] == data["id"]), None)
+#                     key = get_cache_key(row["user_cred_id"], data["status"])
+#                     cache_list = trade_signal_cache.get(key, [])
+#                     existing_row = next((r for r in cache_list if r["id"] == data["id"]), None)
 
-                    # if existing_row == data:
-                    #     continue  # ✅ No change → skip publishing
+#                     # if existing_row == data:
+#                     #     continue  # ✅ No change → skip publishing
 
-                    message = {
-                        "op": row["action_type"],
-                        "user_cred_id": row["user_cred_id"],
-                        "row": make_json_safe(data)
-                    }
+#                     message = {
+#                         "op": row["action_type"],
+#                         "user_cred_id": row["user_cred_id"],
+#                         "row": make_json_safe(data)
+#                     }
 
-                await r.publish("refresh_trade_signals", json.dumps(message))
-                print(f"📤 Published {row['action_type']} for trade_id={row['row_id']}")
+#                 await r.publish("refresh_trade_signals", json.dumps(message))
+#                 print(f"📤 Published {row['action_type']} for trade_id={row['row_id']}")
 
-                cursor.execute("DELETE FROM redis_notify WHERE id = %s", (row["id"],))
-                conn.commit()
+#                 cursor.execute("DELETE FROM redis_notify WHERE id = %s", (row["id"],))
+#                 conn.commit()
 
-        except Exception as e:
-            print("❌ DB publisher error:", e)
+#         except Exception as e:
+#             print("❌ DB publisher error:", e)
 
-        time.sleep(1)
+#         time.sleep(1)
         
 def add_or_update_trade_cache(user_cred_id, row):
     key = get_cache_key(user_cred_id, row["status"])
@@ -140,29 +144,29 @@ def remove_trade_from_cache(user_cred_id, row_id):
             if len(trade_signal_cache[key]) < original_len:
                 print(f"🗑️ Removed row ID {row_id} from cache {key}")
 
-async def redis_cache_listener():
-    r = redis.Redis(host="localhost", port=6379, decode_responses=True)
-    pubsub = r.pubsub()
-    await pubsub.subscribe("refresh_trade_signals")
-    print("✅ Subscribed to Redis channel 'refresh_trade_signals'")
+# async def redis_cache_listener():
+#     r = redis.Redis(host="localhost", port=6379, decode_responses=True)
+#     pubsub = r.pubsub()
+#     await pubsub.subscribe("refresh_trade_signals")
+#     print("✅ Subscribed to Redis channel 'refresh_trade_signals'")
 
-    while not stop_event.is_set():
-        async for msg in pubsub.listen():
-            if msg["type"] != "message":
-                continue
-            try:
-                data = json.loads(msg["data"])
-                user_cred_id = data["user_cred_id"]
-                row = data["row"]
-                # print(f"data-op: {data['op']} -- Data: {data}")
-                if data["op"] == "delete":
-                    # print("here")
-                    remove_trade_from_cache(user_cred_id, row["id"])
-                else:
-                    add_or_update_trade_cache(user_cred_id, row)
-                    print(f"✅ Live cache updated for {user_cred_id} row ID {row['id']}")
-            except Exception as e:
-                print("❌ Error in Redis listener:", e)
+#     while not stop_event.is_set():
+#         async for msg in pubsub.listen():
+#             if msg["type"] != "message":
+#                 continue
+#             try:
+#                 data = json.loads(msg["data"])
+#                 user_cred_id = data["user_cred_id"]
+#                 row = data["row"]
+#                 # print(f"data-op: {data['op']} -- Data: {data}")
+#                 if data["op"] == "delete":
+#                     # print("here")
+#                     remove_trade_from_cache(user_cred_id, row["id"])
+#                 else:
+#                     add_or_update_trade_cache(user_cred_id, row)
+#                     print(f"✅ Live cache updated for {user_cred_id} row ID {row['id']}")
+#             except Exception as e:
+#                 print("❌ Error in Redis listener:", e)
                 
 def get_cache_key(user_cred_id, status):
     return f"{user_cred_id}:{status}"
@@ -191,18 +195,19 @@ def fetch_trade_signals(user_cred_id, status):
 
     # 🔁 Fetch from DB directly
     conn = db_conn.get_connection()
-    with conn.cursor() as cursor:
-        cursor.execute("""
-            SELECT * FROM opn_trade
-            WHERE user_cred_id = %s AND status = %s
-        """, (user_cred_id, status))
-        results = cursor.fetchall()
-        
-        # print(f"Db Result: {results}")
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT * FROM opn_trade
+                WHERE user_cred_id = %s AND status = %s
+            """, (user_cred_id, status))
+            results = cursor.fetchall()
 
-        if results:
-            trade_signal_cache[key] = results  # ✅ Populate cache
-        return results
+            if results:
+                trade_signal_cache[key] = results  # ✅ Populate cache
+            return results
+    finally:
+        conn.close()  # ✅ Ensure the connection is closed
 
 
 # def fetch_trade_signals(user_cred_id, status):
@@ -350,7 +355,8 @@ def safe_reEnterTrade(exchange, trade_id, symbol, order_side, trigger_price, re_
     acquired = lock.acquire(blocking=False)
     
     if dn_allow_rentry == 1:
-        buffer_print(f"⏩ Skipping re-entry for {symbol}, already re-entered.")
+        # buffer_print(f"⏩ Skipping re-entry for {symbol}, already re-entered.")
+        pass
         return
 
     try:
@@ -427,7 +433,8 @@ def reEnterTrade(exchange, trade_id, symbol, order_side, order_price, order_amou
     try:
         
         if dn_allow_rentry == 1:
-            buffer_print(f"⏩ Skipping re-entry for {symbol}, already re-entered.")
+            # buffer_print(f"⏩ Skipping re-entry for {symbol}, already re-entered.")
+            pass
             return
         
         # Check if symbol is futures (adjust this check to your actual symbol format)
@@ -604,7 +611,7 @@ def monitor_position_and_reenter(
         # Extract critical values safely
         # liquidation_price = float(position.get('liquidationPrice') or 0)
         entry_price = float(position.get('entryPrice') or 0)
-        liquidation_price = entry_price + (entry_price*1.2)
+        liquidation_price = entry_price + (entry_price*0.2)
         mark_price = float(position.get('markPrice') or 0)
         contracts = float(position.get('contracts') or 0)
         leverage = float(position.get("leverage") or 1)
@@ -662,10 +669,15 @@ def monitor_position_and_reenter(
             ((notional / leverage) * multiplier) / mark_price, amount_sig_digits
         )
 
-        hedge_order_amount = normalize_amount(contracts / 2.0, amount_precision)
+        hedge_order_amount = normalize_amount(contracts / 4.0, amount_precision)
         hedge_side_int = 0 if hedge_order_side == 'buy' else 1
         trail_thresh = 0.20
-        profit_target_distance = 0.12
+        profit_target_distance = 0.01
+
+        if hedged == 200:
+            if verbose:
+                buffer_print(f"Trade is done, Hedge logic stoped -- TradeId: {trade_id}")
+            return
 
         # 🔁 Hedge re-entry trigger
         if re_entry_count >= hedge_start and hedged == 0:
@@ -706,7 +718,7 @@ def monitor_position_and_reenter(
 
         if hedged == 1 and not (is_hedged or is_limit_hedge) and hedge_limit == 0:
             limit_hedge_order = place_limit_buy_above_market(
-                exchange, symbol, hedge_order_side, "limit", hedge_order_amount, pip_count=25
+                exchange, symbol, hedge_order_side, "limit", hedge_order_amount, pip_count=55
             )
             if limit_hedge_order:
                 limit_hedge_data = {
@@ -755,7 +767,7 @@ def monitor_position_and_reenter(
                 buffer_print(f"[{symbol}] Same-side limit or conditional limit order exists. Skipping re-entry.")
             return
         
-        if re_entry_count < hedge_start and hedged == 0:
+        if re_entry_count <= hedge_start and hedged == 0:
             # ✅ Main re-entry execution
             if dn_allow_rentry == 1:
                 if update_row(
@@ -798,7 +810,7 @@ def monitor_position_and_reenter(
         buffer_print(f"Unexpected error in monitor_position_and_reenter for {symbol}: {e}")
         
         
-def monitor_hedge_position(exchange, user_id, trade_id, symbol, trade_type=0):
+def monitor_hedge_position(exchange, user_id, trade_id, symbol, hedged, status, trade_type=0):
     # Get hedge limit row data from the database
     # trade_type=0 for buy
     hd_limit_data_raw = fetch_row_details(db_conn, "hedge_limit", user_id, trade_id, trade_type)
@@ -813,6 +825,13 @@ def monitor_hedge_position(exchange, user_id, trade_id, symbol, trade_type=0):
     # print("Raw-data: ", hd_limit_data)
     
     order_id = hd_limit_data['order_id']
+
+    # Remove pending orders if SELL trade is already closed
+    if hedged == 200 and status == -2:
+        side_cancel = "long" if trade_type == 0 else "short"
+        result = cancel_existing_stop_order(exchange, symbol, order_id, side_cancel)
+        if result:
+            buffer_print(f"Closed PENDING {side_cancel.upper()} order, since main(SELL-HEDGED) trade is out")
     
     check_limit_order = check_if_order_filled_and_store(exchange, user_id, trade_id, order_id, symbol, trade_type)
     
@@ -870,7 +889,7 @@ def check_if_order_filled_and_store(exchange, user_id, trade_id, order_id, symbo
 
         if order_status in ['filled', 'closed']:
             trail_thresh = 0.20
-            profit_target_distance = 0.12
+            profit_target_distance = 0.01
             print(f"✅ Order {order_id} FILLED at {filled_price} for {filled_amount}")
 
             hedged_limit_taken_data = {
@@ -914,7 +933,8 @@ def check_if_order_filled_and_store(exchange, user_id, trade_id, order_id, symbo
             else:
                 print(f"⚠️ Error deleting order {order_id} from hedge_limit.")
         else:
-            print(f"⏳ Order {order_id} is still OPEN... waiting.")
+            # print(f"⏳ Order {order_id} is still OPEN... waiting.")
+            pass
 
         return None
 
@@ -964,16 +984,16 @@ def cancel_if_price_falls_below_limit(exchange, order_id, symbol, pip_count=5):
 
         # Ensure threshold_price is always below current price
         if threshold_price >= current_price:
-            threshold_price = round(current_price - pip_size, pip_size_count)
+            threshold_price = round(current_price - (pip_size * pip_count), pip_size_count)
 
         # Debug print
-        print(f"Limit price: {limit_price}, Current price: {current_price}, Threshold price: {threshold_price}")
+        # print(f"Limit price: {limit_price}, Current price: {current_price}, Threshold price: {threshold_price}")
 
         # Cancel if price has fallen below threshold (for buy orders)
         if side == 'buy' and current_price <= threshold_price:
             side_cancel = "long"
             result = cancel_existing_stop_order(exchange, symbol, order_id, side_cancel)
-            print(f"❌ Limit order cancelled: Market price {current_price} fell below Threshold price{threshold_price}:: Limit price: {limit_price}")
+            print(f"||❌|| Limit order cancelled: Market price {current_price} fell below Threshold price{threshold_price}:: Limit price: {limit_price}")
             return True
         else:
             print(f"✅ Order kept: Market price is {current_price}, threshold is {threshold_price}")
@@ -1007,7 +1027,7 @@ def cancel_existing_stop_order(exchange, symbol, order_id, side):
             # update_trail_order('')
     return False
 
-def closeAllPosition(exchange, positions, symbol):
+def closeAllPosition(exchange, positions, trade_id, symbol):
     for pos in positions:
         if pos['symbol'] != symbol:
             continue
@@ -1025,13 +1045,19 @@ def closeAllPosition(exchange, positions, symbol):
             # Try to close SHORT positions (i.e., sell-side positions) first
             if side == 'short':
                 buffer_print(f"📉 Closing SHORT position on {symbol} ({contracts} contracts)")
-                exchange.create_order(
+                order = exchange.create_order(
                     symbol=symbol,
                     type='market',
                     side='buy',  # buy to close short
                     amount=contracts,
                     params={'posSide': 'Short'}
                 )
+
+                if order:
+                    if update_row(
+                        db_conn, 'opn_trade', {'hedged': 200}, {'id': ('=', trade_id), 'symbol': symbol}
+                    ):
+                        print(f"✅ TRADE DONE ( UPDATED 'hedged' to 200 for tradeId: {trade_id})")
 
         except Exception as e:
             buffer_print(f"⚠️ Failed to close SHORT position on {symbol}: {e}")
@@ -1176,13 +1202,13 @@ def GetHedgeFloatingPnl(exchange, all_position, symbol, hedge_side="long"):
     return total_pnl
 
 def canClosePosition(cummulative_profit, close_threshold, break_threshold):
-    print("Cumulative: ", cummulative_profit)
-    if cummulative_profit <= close_threshold and cummulative_profit >= (break_threshold - 0.3) and cummulative_profit < break_threshold:
+    # print("Cumulative: ", cummulative_profit)
+    if cummulative_profit <= close_threshold and cummulative_profit >= (break_threshold - 0.2):
         return True
     return False
 
 def updateCumTrailThreshold(trade_id, symbol, cummulative_profit, close_threshold, break_threshold):
-    if cummulative_profit >= (close_threshold + 0.3):
+    if cummulative_profit >= close_threshold:
         newCumCloseThreshold = close_threshold + break_threshold
         cum_close_threshold_update = update_row(db_conn,
             table_name = 'opn_trade',
@@ -1215,7 +1241,7 @@ def trailing_stop_logic(exchange, position, user_id, trade_id, trade_order_id, t
         elif pos_mode == 'hedged':
             set_phemex_leverage(exchange, trade_id, re_entry_count, symbol, long_leverage=leverageDefault, short_leverage=leverageDefault, side=sideNml)
 
-    if -abs(leverage) > leverageDefault:
+    if -abs(leverage) > leverageDefault and -abs(leverage) <= -1:
         # Depending on mode, set leverage appropriately as above
         pos_mode = position['info'].get('posMode', '').lower()
         print(f"🛑🛑Symbol: [{symbol}] side: {sideRl}, posMode: {pos_mode} | Leverage: {-abs(leverage)} | posSide: {position['info'].get('posSide', '')}")
@@ -1246,10 +1272,10 @@ def trailing_stop_logic(exchange, position, user_id, trade_id, trade_order_id, t
         
         updateCumTrailThreshold(trade_id, symbol ,CummulativeProfit, closeThreshold, breakThreshold)
         
-        print("neww: ", canClosePosition(CummulativeProfit, closeThreshold, cum_break_distance))
+        # print("neww: ", canClosePosition(CummulativeProfit, closeThreshold, cum_break_distance))
         
         if canClosePosition(CummulativeProfit, closeThreshold, cum_break_distance):
-            cumulative_close = closeAllPosition(exchange, all_position, symbol)
+            cumulative_close = closeAllPosition(exchange, all_position, trade_id, symbol)
             if cumulative_close:
                 buffer_print(f"Cumulative trade is closed for trade {trade_id} @ a profit of {CummulativeProfit}")
                 # hedge_trade_deleted = delete_row(db_conn,
@@ -1262,12 +1288,13 @@ def trailing_stop_logic(exchange, position, user_id, trade_id, trade_order_id, t
                 #     print(f"⚠️ Error occred while deleting Hedge trades for: {trade_id} deleted.")
                 return
 
-    buffer_print(f"\n📈💰 {symbol} ({side.upper()}) | Leverage: {leverage} | Contract(Amount): {contracts} | MarginMode: {margin_mode}")
-    buffer_print(f"Profit-Distance: {profit_distance}, PNL → Unrealized: {unrealized_pnl:.4f}, [- Realized: {realized_pnl:.4f}, Total: {total_pnl:.4f}]")
-    if hedge == 1:
-        buffer_print(f"\n[- closedHedgeProfit: {closedHedgeProfit:.4f}-[- floatHedgeProfit: {floatHedgeProfit:.4f}]([- CummulativeProfit: {CummulativeProfit:.4f}])")
+    # buffer_print(f"\n📈💰 {symbol} ({side.upper()}) | Leverage: {leverage} | Contract(Amount): {contracts} | MarginMode: {margin_mode}")
+    # buffer_print(f"Profit-Distance: {profit_distance}, PNL → Unrealized: {unrealized_pnl:.4f}, [- Realized: {realized_pnl:.4f}, Total: {total_pnl:.4f}]")
+    # if hedge == 1:
+    #     buffer_print(f"\n[- closedHedgeProfit: {closedHedgeProfit:.4f}-[- floatHedgeProfit: {floatHedgeProfit:.4f}]([- CummulativeProfit: {CummulativeProfit:.4f}])")
 
-    if total_pnl <= 0.01:
+    if total_pnl <= 0.001:
+        # print(f"{symbol} here")
         if trail_order_id:
             cancel_conditional_order = cancel_existing_stop_order(exchange, symbol, trail_order_id, side)
             if cancel_conditional_order:
@@ -1275,8 +1302,8 @@ def trailing_stop_logic(exchange, position, user_id, trade_id, trade_order_id, t
                     table_name = 'opn_trade',
                     updates = {
                         'trail_order_id': "",
-                        'trail_threshold': 0.10,
-                        'profit_target_distance': 0.05,
+                        'trail_threshold': 0.20,
+                        'profit_target_distance': 0.01,
                         'trade_done': 0
                     },
                     conditions = {'id': ('=', trade_id),'symbol': symbol})
@@ -1296,14 +1323,15 @@ def trailing_stop_logic(exchange, position, user_id, trade_id, trade_order_id, t
                         }
                     })
         return
-    print(f"Thresh val: {trail_theshold}")
+    
     if profit_distance >= trail_theshold:
-        
+        # buffer_print(f"Thresh val: {trail_theshold}")
         new_stop_price_distance = mark_price * profit_target_distance
         new_stop_price = (mark_price - new_stop_price_distance) if side == 'long' else (mark_price + new_stop_price_distance)
         # new_stop_price = entry_price * (1 + profit_target_distance / leverage) if side == 'long' else entry_price * (1 - profit_target_distance / leverage)
         if (side == 'long' and new_stop_price <= entry_price) or (side == 'short' and new_stop_price >= entry_price):
-            buffer_print(f"❌ Invalid stop-loss price {new_stop_price:.4f} vs entry {entry_price}")
+            # buffer_print(f"❌ Invalid stop-loss price {new_stop_price:.4f} vs entry {entry_price}")
+            pass
             return
 
         if trail_order_id != '':
@@ -1387,7 +1415,7 @@ def CorrectTradeDetailsFunction(exchange, saved_open_symbol, saved_open_side, sa
         newExecSeq = matched_closed.get('info', {}).get('execSeq', '')
         newCumClosedPnl = matched_closed.get('info', {}).get('cumClosedPnlRv')
         
-        print(f"NuCum: {newCumClosedPnl} and PrevCum: {prevCumClosedPnl}")
+        # print(f"NuCum: {newCumClosedPnl} and PrevCum: {prevCumClosedPnl}")
         realizedPnl = float(newCumClosedPnl) - float(prevCumClosedPnl)
         # print(f"pnl: {realizedPnl}")
         return newCumClosedPnl, realizedPnl
@@ -1426,7 +1454,7 @@ def mark_trade_signal_closed_if_position_closed(exchange, strategy_type, symbol,
             # print(f"IsOpen: {is_open}")
             cancl_orphan_ordrs = cancel_orphan_orders(exchange, symbol, side, trade_id, re_entry_count-1, 'limitiftouched')
             if cancl_orphan_ordrs:
-                print("hereddd")
+                # print("hereddd")
                 backup_trade_final = update_trade_history ({
                     "token": TOKEN,
                     "table_name":"trade_history",
@@ -1555,9 +1583,9 @@ def sync_open_orders_to_db(exchange, user_id):
                 continue  # Already stored
             # print(f"Symbol: {symbol} and side: {side}")
             side_int = 0 if side == 'buy' else 1 if side == 'sell' else None
-            trail_thresh = 0.10  # 10%
-            profit_target_distance = 0.05  # 6%
-
+            
+            trail_thresh = 0.20  # 10%
+            profit_target_distance = 0.01  # 6%
             
             # Trade Data Payload
             strategy_type = "initial" if side == 'sell' else "hedge" if side == 'buy' else "Nopee"
@@ -1567,8 +1595,15 @@ def sync_open_orders_to_db(exchange, user_id):
             if side == "sell":
                 is_hedged = has_opposite_position_open(exchange, symbol, side)
                 hedged_res = 1 if is_hedged else 0
+                if is_hedged:
+                    trail_thresh = 0.10  # 10%
+                    profit_target_distance = 0.01  # 6%
             if side == "buy":
                 parent_trade_id = GetParentTrade(db_conn, "opn_trade", user_id, symbol, 1)
+
+            is_hedged = has_opposite_position_open(exchange, symbol, side)
+            
+
             trade_data = {
                 "strategy_type": strategy_type,
                 "user_cred_id": user_id,
@@ -1677,7 +1712,7 @@ def process_single_position(exchange, pos, signal_map, positionst):
 
     row = signal_map.get((symbol, side_setup), {})
     if not row:
-        buffer_print(f"⚠️ No matching trade signal for {symbol} with side '{side_setup}' (TradeMode: {info.get('posMode')})")
+        # buffer_print(f"⚠️ No matching trade signal for {symbol} with side '{side_setup}' (TradeMode: {info.get('posMode')})")
         return
     
     # print("roww: ", row)
@@ -1692,7 +1727,7 @@ def process_single_position(exchange, pos, signal_map, positionst):
     trail_order_id = row.get('trail_order_id')
     trade_live_size = row.get('lv_size')
     trail_thresh = float(row.get('trail_threshold', 0.10))
-    trail_profit_distance = float(row.get('profit_target_distance', 0.06))
+    trail_profit_distance = float(row.get('profit_target_distance', 0.01))
     cum_close_threshold = float(row.get('cum_close_threshold', 1.0))
     cum_close_distance = float(row.get('cum_close_distance', 0.5))
     side_int = row.get('trade_type')
@@ -1723,11 +1758,11 @@ def process_single_position(exchange, pos, signal_map, positionst):
             
             # print(f"Symbol: {symbol} - Strategy_type:  {strategy_type} - Hedge_limit: {hedge_limit} - Side: {side} - Hedged: {hedged}")
             trailing_stop_logic(exchange, pos, user_id, trade_id, trade_order_id,
-            trail_order_id, trail_thresh, trail_profit_distance, 0.05, 0.2, cum_close_threshold, cum_close_distance, trade_reentry_count, hedged, symbolPosition)
+            trail_order_id, trail_thresh, trail_profit_distance, 0.01, 0.1, cum_close_threshold, cum_close_distance, trade_reentry_count, hedged, symbolPosition)
             if strategy_type == "initial":
-                monitor_position_and_reenter(exchange, user_id, trade_id, symbol, pos, trade_live_size, trade_reentry_count, dn_allow_rentry, hedged, hedge_start,hedge_limit, True)
+                monitor_position_and_reenter(exchange, user_id, trade_id, symbol, pos, trade_live_size, trade_reentry_count, dn_allow_rentry, hedged, hedge_start,hedge_limit, False)
                 if hedge_limit == 1:
-                    monitor_hedge_position(exchange, user_id, trade_id, symbol)
+                    monitor_hedge_position(exchange, user_id, trade_id, symbol, hedged, status)
             if execSeqValueFunc is not None and (execSeqValueFunc != execSeqValueDb or execSeqValueDb == ''):
                 update_execSeq = update_row(db_conn,table_name='opn_trade',updates={'execSeq': execSeqValueFunc},conditions={'id': ('=', trade_id), 'symbol': symbol})
                 print(f"ExecSeq: {execSeqValueFunc}")
@@ -1735,7 +1770,7 @@ def process_single_position(exchange, pos, signal_map, positionst):
                     print(f"✅ UPDATED 'execSeqValueDb' to {execSeqValueFunc} for tradeId: {trade_id}")
             if cumClosedPnlFunc != prevcumClosedPnlDb:
                 update_cumClosedPnl = update_row(db_conn,table_name='opn_trade',updates={'prevcumClosedPnl': cumClosedPnlFunc},conditions={'id': ('=', trade_id), 'symbol': symbol})
-                print(f"cumclosed value: {cumClosedPnlFunc}")
+                # print(f"cumclosed value: {cumClosedPnlFunc}")
                 if update_cumClosedPnl:
                     print(f"✅ UPDATED 'prevcumClosedPnlDb' to {cumClosedPnlFunc} for tradeId: {trade_id}")
         else:
@@ -1745,34 +1780,34 @@ def process_single_position(exchange, pos, signal_map, positionst):
             # Correction Logic
             execSeqValueFunc, cumClosedPnlFunc = GetClosedTradeDetails(allSymbolPosition, symbol, side_ver)
             # print(f"Found details: ExecSeq = {execSeqValueFunc} | CumClosedPnl= {cumClosedPnlFunc}")
-            print(f"SIDE: {side} -from- {side_int} |and| {execSeqValueDb}")
+            # print(f"SIDE: {side} -from- {side_int} |and| {execSeqValueDb}")
             mark_trade_signal_closed_if_position_closed(exchange, strategy_type, symbol, trade_order_id, trade_id, side, trade_reentry_count, execSeqValueDb, prevcumClosedPnlDb, symbolPosition)
-        buffer_print(f"--------------🙌 Position processed for {symbol} 🙌---------------")
+        # buffer_print(f"--------------🙌 Position processed for {symbol} 🙌---------------")
         flush_symbol_buffer()
     except Exception as e:
         buffer_print(f"❌ Error processing position for symbol {symbol}: {e}")
         traceback.print_exc()
 
 
-def start_redis_listener_thread():
-    def runner():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(redis_cache_listener())
+# def start_redis_listener_thread():
+#     def runner():
+#         loop = asyncio.new_event_loop()
+#         asyncio.set_event_loop(loop)
+#         loop.run_until_complete(redis_cache_listener())
 
-    threading.Thread(target=runner, daemon=True).start()
-    print("🚀 Redis cache listener thread started")
-    return True
+#     threading.Thread(target=runner, daemon=True).start()
+#     print("🚀 Redis cache listener thread started")
+#     return True
 
-def start_db_publisher_thread():
-    def runner():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(db_to_redis_publisher())
+# def start_db_publisher_thread():
+#     def runner():
+#         loop = asyncio.new_event_loop()
+#         asyncio.set_event_loop(loop)
+#         loop.run_until_complete(db_to_redis_publisher())
 
-    threading.Thread(target=runner, daemon=True).start()
-    print("🚀 DB-to-Redis publisher thread started")
-    return True
+#     threading.Thread(target=runner, daemon=True).start()
+#     print("🚀 DB-to-Redis publisher thread started")
+#     return True
 
 def map_symbol(exchange, db_symbol):
     for market in exchange.markets.values():
@@ -1786,7 +1821,7 @@ def main_job(exchange, user_cred_id, verify):
         trade_signals = fetch_trade_signals(user_cred_id=user_cred_id, status=1)
         # print("Tradesignal-cache: ", trade_signals)
         if not trade_signals:
-            buffer_print(f"[{exchange.apiKey[:6]}...] ⚠️ No trade signals found.")
+            # buffer_print(f"[{exchange.apiKey[:6]}...] ⚠️ No trade signals found.")
             return
 
         signal_map = {
@@ -1822,8 +1857,8 @@ def main_job(exchange, user_cred_id, verify):
         positionst = [pos for pos in allPositions
                       if (float(pos.get('info', {}).get('size', 0)) > 0 or pos.get('contracts', 0) > 0)]
         usdt_balances = exchange.fetch_balance({'type': 'swap'}).get('USDT', {})
-        buffer_print(f"[{exchange.apiKey[:6]}...] USDT Balance->Free: {usdt_balances.get('free', 0)}")
-        buffer_print(f"[{exchange.apiKey[:6]}...] USDT Balance->Total: {usdt_balances.get('total', 0)}")
+        # buffer_print(f"[{exchange.apiKey[:6]}...] USDT Balance->Free: {usdt_balances.get('free', 0)}")
+        # buffer_print(f"[{exchange.apiKey[:6]}...] USDT Balance->Total: {usdt_balances.get('total', 0)}")
 
         for pos in allPositions:
             if stop_event.is_set():
@@ -1846,7 +1881,7 @@ def main_job(exchange, user_cred_id, verify):
             def run_symbol_thread(pos=pos, symbol=symbol, thread_key=thread_key):
                 lock = symbol_locks[thread_key]
                 if lock.locked():
-                    buffer_print(f"🔁 Waiting for lock on {thread_key} - {symbol} — already being processed.")
+                    # buffer_print(f"🔁 Waiting for lock on {thread_key} - {symbol} — already being processed.")
                     return  # Thread already handling this symbol
 
                 def locked_runner():
@@ -1857,12 +1892,13 @@ def main_job(exchange, user_cred_id, verify):
                             buffer_print(f"❌ Error processing position for symbol {symbol}: {e}")
                             traceback.print_exc()
                         finally:
-                            buffer_print(f"✅ Thread cleanup done for {symbol}")
+                            # buffer_print(f"✅ Thread cleanup done for {symbol}")
+                            pass
 
                 threading.Thread(target=locked_runner, daemon=False).start()
 
             run_symbol_thread()
-            time.sleep(0.2)  # small throttle
+            time.sleep(0.8)  # small throttle
     except Exception as e:
         buffer_print(f"❌ Error in main_job for [{exchange.apiKey[:6]}...]: {e}")
         traceback.print_exc()
@@ -1897,7 +1933,7 @@ def run_exchanges_in_batch(batch):
                         break
                     try:
                         result = future.result()
-                        print(f"Task completed with result: {result}")
+                        # print(f"Task completed with result: {result}")
                     except Exception as e:
                         buffer_print(f"❌ Error in batch task: {e}")
                         traceback.print_exc()
@@ -1910,9 +1946,9 @@ def run_exchanges_in_batch(batch):
             buffer_print(f"❌ Unexpected exception in batch: {e}")
             traceback.print_exc()
 
-        print("Batch iteration complete, sleeping 0.8s")
+        # print("Batch iteration complete, sleeping 0.8s")
         if not stop_event.is_set():
-            time.sleep(0.8)
+            time.sleep(1)
 
 
 
@@ -2039,6 +2075,7 @@ def run_all():
 if __name__ == "__main__":
     try:
         # Initialize trade_signal_cache at startup
+        sys.stdout.reconfigure(line_buffering=True)  # Prevent console buffer freezing
         clear_trade_signal_cache()
         # if start_redis_listener_thread():
         #     print("🚀 Redis live cache listener thread started")

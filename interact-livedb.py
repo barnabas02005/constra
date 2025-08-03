@@ -61,6 +61,11 @@ def add_columns(table_name, column_definitions):
     
 def run_schema_setup():
     sql_statements = [
+        # #Drop triggers if they exist
+        # "DROP TRIGGER IF EXISTS opn_trade_after_insert;",
+        # "DROP TRIGGER IF EXISTS opn_trade_after_update;",
+        # "DROP TRIGGER IF EXISTS opn_trade_after_delete;",
+
         # Create table
         """
         CREATE TABLE IF NOT EXISTS redis_notify (

@@ -1,4 +1,6 @@
 import os
+import sys
+import io
 import threading
 import time
 from datetime import datetime
@@ -10,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 import ccxt
 import pandas as pd
 import ta
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 from db_config import Database
 from dotenv import load_dotenv
@@ -68,17 +72,6 @@ def get_exchanges():
             return cursor.fetchall()
     except Exception as e:
         print("❌ Getting Exchanges failed:", e)
-
-      
-def clear_trade_signals_for_exchange(exchange_db_id):
-  try:
-      with api_db_conn.cursor() as cursor:
-          cursor.execute("DELETE FROM trade_signal WHERE exchange = %s", (exchange_db_id,))
-      api_db_conn.commit()
-      print(f"✅ Cleared trade signals for exchange ID {exchange_db_id}")
-  except Exception as e:
-      print(f"❌ Failed to clear trade signals: {e}")
-
 
 def create_exchange(exchange_name):
     return getattr(ccxt, exchange_name)({
@@ -253,6 +246,7 @@ def main_job(exchange, exchange_db_id, timeframe='1h'):
                     if insert_trade_signal(db_conn, trade_signal_data):
                         with remaining_symbols_lock:
                             remaining_symbols.discard(symbol)  # ✅ remove from retry list
+                        print(f"✅{symbol} trade signal taken succesfully! --Expecting the best from this trade!!")
                    
                     # drop_table("trade_signal")
                     # Add your trade execution or logging logic here
@@ -264,7 +258,7 @@ def main_job(exchange, exchange_db_id, timeframe='1h'):
                 thread_safe_print(f"❌ Error in {symbol}: {e}")
                 traceback.print_exc()
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=10) as executor:
             executor.map(process_symbol, remaining_symbols)
 
         if failed_due_to_rate_limit:

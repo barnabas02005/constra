@@ -168,15 +168,25 @@ def get_exchange_by_id(db_conn, id):
   
 def fetch_single_trade_signal(db_conn):
     conn = db_conn.get_connection()
-    with conn.cursor() as cursor:
-        cursor.execute("""
-            SELECT * FROM trade_signal 
-            WHERE status = 1 
-            ORDER BY RAND() + UNIX_TIMESTAMP(date_added) / 1000000 DESC 
-            LIMIT 1
-        """)
-        return cursor.fetchone()
-      
+    if conn is None:
+        print("❌ DB connection is None")
+        return None
+
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT * FROM trade_signal 
+                WHERE status = 1 
+                ORDER BY RAND() + UNIX_TIMESTAMP(date_added) / 1000000 DESC 
+                LIMIT 1
+            """)
+            return cursor.fetchone()
+    except Exception as e:
+        print(f"❌ Error fetching trade signal: {e}")
+        return None
+    finally:
+        conn.close()
+
 def has_open_trade(db_conn, user_cred_id, symbol):
     try:
         conn = db_conn.get_connection()
@@ -252,7 +262,7 @@ def insert_trade_data(db_conn, data):
     try:
         with conn.cursor() as cursor:
             sql = """
-                INSERT INTO opn_trade (strategy_type, user_cred_id, child_to, trade_signal, order_id, symbol, trade_type, amount, leverage, trail_threshold, profit_target_distance, trade_done, re_entry_count, hedged, hedge_start, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO opn_trade (strategy_type, user_cred_id, child_to, trade_signal, order_id, symbol, trade_type, amount, leverage, trail_threshold, profit_target_distance, cum_close_threshold, cum_close_distance, trade_done, re_entry_count, hedged, hedge_start, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             cursor.execute(sql, (
                 data['strategy_type'],
@@ -266,6 +276,8 @@ def insert_trade_data(db_conn, data):
                 data['leverage'],
                 data['trail_threshold'],
                 data['profit_target_distance'],
+                data['cum_close_threshold'],
+                data['cum_close_distance'],
                 data['trade_done'],
                 data['re_entry_count'],
                 data['hedged'],

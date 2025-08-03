@@ -146,7 +146,7 @@ def place_entry_and_liquidation_limit_order (exchange, symbol, side, amount, lev
         return None
     
     
-def place_limit_buy_above_market(exchange, symbol, side, type, amount, pip_count=5):
+def place_limit_buy_above_market(exchange, symbol, side, type, amount, pip_count=15):
     try:
         # Load markets if not already loaded
         markets = exchange.load_markets()
