@@ -75,7 +75,10 @@ def get_exchanges():
 
 def create_exchange(exchange_name):
     return getattr(ccxt, exchange_name)({
-        'enableRateLimit': True
+        'enableRateLimit': True,
+        'headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+        },
     })
 
 stop_event = threading.Event()

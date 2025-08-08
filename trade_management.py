@@ -16,6 +16,7 @@ import math
 import schedule
 import traceback
 import ccxt
+import random
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
@@ -260,6 +261,11 @@ def update_trade_history(data: dict):
         print("⚠️ Error:", str(e))
         return False
 
+user_agents = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Mozilla/5.0 (X11; Linux x86_64)",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+]
 
 def create_exchange(exchange_name, api_key, secret, password=None):
     """Create and return a CCXT exchange instance"""
@@ -269,6 +275,9 @@ def create_exchange(exchange_name, api_key, secret, password=None):
             'apiKey': api_key,
             'secret': secret,
             'enableRateLimit': True,
+            'headers': {
+                'User-Agent': random.choice(user_agents)
+            },
             'options': {
                 'type': 'swap',
                 'defaultType': 'swap',
@@ -676,7 +685,7 @@ def monitor_position_and_reenter(
 
         if hedged == 200:
             if verbose:
-                buffer_print(f"Trade is done, Hedge logic stoped -- TradeId: {trade_id}")
+                buffer_print(f"Trade is done, Hedge logic stopped -- TradeId: {trade_id}")
             return
 
         # 🔁 Hedge re-entry trigger
@@ -827,7 +836,7 @@ def monitor_hedge_position(exchange, user_id, trade_id, symbol, hedged, status, 
     order_id = hd_limit_data['order_id']
 
     # Remove pending orders if SELL trade is already closed
-    if hedged == 200 and status == -2:
+    if hedged == 200:
         side_cancel = "long" if trade_type == 0 else "short"
         result = cancel_existing_stop_order(exchange, symbol, order_id, side_cancel)
         if result:
@@ -1053,12 +1062,6 @@ def closeAllPosition(exchange, positions, trade_id, symbol):
                     params={'posSide': 'Short'}
                 )
 
-                if order:
-                    if update_row(
-                        db_conn, 'opn_trade', {'hedged': 200}, {'id': ('=', trade_id), 'symbol': symbol}
-                    ):
-                        print(f"✅ TRADE DONE ( UPDATED 'hedged' to 200 for tradeId: {trade_id})")
-
         except Exception as e:
             buffer_print(f"⚠️ Failed to close SHORT position on {symbol}: {e}")
 
@@ -1082,6 +1085,12 @@ def closeAllPosition(exchange, positions, trade_id, symbol):
                     amount=contracts,
                     params={'posSide': 'Long'}
                 )
+                if order:
+                    if update_row(
+                        db_conn, 'opn_trade', {'hedged': 200}, {'id': ('=', trade_id), 'symbol': symbol}
+                    ):
+                        print(f"✅ TRADE DONE ( UPDATED 'hedged' to 200 for tradeId: {trade_id})")
+                        return
             except Exception as e:
                 buffer_print(f"⚠️ Failed to close LONG position on {symbol}: {e}")
 
@@ -1241,7 +1250,7 @@ def trailing_stop_logic(exchange, position, user_id, trade_id, trade_order_id, t
         elif pos_mode == 'hedged':
             set_phemex_leverage(exchange, trade_id, re_entry_count, symbol, long_leverage=leverageDefault, short_leverage=leverageDefault, side=sideNml)
 
-    if -abs(leverage) > leverageDefault and -abs(leverage) <= -1:
+    if -abs(leverage) < leverageDefault:
         # Depending on mode, set leverage appropriately as above
         pos_mode = position['info'].get('posMode', '').lower()
         print(f"🛑🛑Symbol: [{symbol}] side: {sideRl}, posMode: {pos_mode} | Leverage: {-abs(leverage)} | posSide: {position['info'].get('posSide', '')}")
@@ -1376,6 +1385,10 @@ def trailing_stop_logic(exchange, position, user_id, trade_id, trade_order_id, t
             # save_trailing_data(symbol, trailing_data, side)
             
 def find_closing_position(open_execSeq, side, symbol, closed_positions):
+
+    # print(f"open execSeq: {open_execSeq}")
+    if not open_execSeq:
+        return
     open_execSeq = int(open_execSeq)
     valid_candidates = []
 
@@ -1408,6 +1421,7 @@ def find_closing_position(open_execSeq, side, symbol, closed_positions):
 
 def CorrectTradeDetailsFunction(exchange, saved_open_symbol, saved_open_side, saved_open_execSeq, prevCumClosedPnl, closed_positions):
     # Find the correct closed match
+    
     matched_closed = find_closing_position(saved_open_execSeq, saved_open_side, saved_open_symbol, closed_positions)
     # Output
     if matched_closed:
@@ -1420,8 +1434,8 @@ def CorrectTradeDetailsFunction(exchange, saved_open_symbol, saved_open_side, sa
         # print(f"pnl: {realizedPnl}")
         return newCumClosedPnl, realizedPnl
     else:
-        print("No matching closed position found. ", closed_positions)
-        return None
+        print("No matching closed position found. ")
+        return None, None
     
 def get_position_side(pos):
     if pos.get('info', {}).get('posMode') == 'Hedged':
@@ -1441,6 +1455,7 @@ def mark_trade_signal_closed_if_position_closed(exchange, strategy_type, symbol,
     # print(f"SIDE2: {side}")
     target_side = 'long' if side.lower() == 'buy' else 'short'
     
+    # print(f"{execSeq} for {saved_open_symbol}")
 
     is_open = any(
         pos['symbol'] == symbol and
@@ -1467,14 +1482,20 @@ def mark_trade_signal_closed_if_position_closed(exchange, strategy_type, symbol,
                     update_to_correct_details = update_row(db_conn,table_name='opn_trade',updates={'realizedPnl': realizedPnl, 'currCumClosedPnl': newCumClosedPnl, 'status':-2},conditions={'id': ('=', trade_id), 'symbol': symbol})
                     if update_to_correct_details:
                         buffer_print(f"✅ HEDGE trade {trade_id} details corrected:  [- Realized PnL: {realizedPnl} -] [- New Cummuative Closed PnL {newCumClosedPnl} -]")
-                        # is_deleted = delete_row(db_conn,
-                        #     table_name='opn_trade',
-                        #     conditions={'id': trade_id}
-                        # )
-                        # if is_deleted:
-                        #     print(f"✅ Trade: {trade_order_id} deleted.")
-                        # else:
-                        #     print(f"⚠️ Error occred while deleting Trade: {trade_order_id} deleted.")
+                        is_deleted = delete_row(db_conn,
+                            table_name='opn_trade',
+                            conditions={'child_to': trade_id}
+                        )
+                        if is_deleted:
+                            print(f"✅ Trade (CHILDREN): {trade_order_id} deleted.")
+                            is_deleted = delete_row(db_conn,
+                                table_name='opn_trade',
+                                conditions={'id': trade_id}
+                            )
+                            if is_deleted:
+                                print(f"✅ Trade: {trade_order_id} deleted.")
+                        else:
+                            print(f"⚠️ Error occred while deleting Trade: {trade_order_id} deleted.")
                         return
                     else:
                         buffer_print(f"⚠️ HEDGE trade: {trade_order_id} or {trade_id} has an issue updating to the correct trade details: [- Realized PnL: {realizedPnl} -] [- New Cummuative Closed PnL {newCumClosedPnl} -]")
@@ -1484,15 +1505,21 @@ def mark_trade_signal_closed_if_position_closed(exchange, strategy_type, symbol,
                 newCumClosedPnl, realizedPnl = CorrectTradeDetailsFunction(exchange, symbol, target_side, execSeq, prevCumClosedPnl, positionst)
                 update_to_correct_details = update_row(db_conn,table_name='opn_trade',updates={'realizedPnl': realizedPnl, 'currCumClosedPnl': newCumClosedPnl, 'status':-2},conditions={'id': ('=', trade_id), 'symbol': symbol})
                 if update_to_correct_details:
-                    buffer_print(f"✅ HEDGE trade {trade_id} details corrected:  [- Realized PnL: {realizedPnl} -] [- New Cummuative Closed PnL {newCumClosedPnl} -]")
-                    # is_deleted = delete_row(db_conn,
-                    #     table_name='opn_trade',
-                    #     conditions={'id': trade_id}
-                    # )
-                    # if is_deleted:
-                    #     print(f"✅ Trade2: {trade_order_id} deleted.")
-                    # else:
-                    #     print(f"⚠️ Error2 occred while deleting Trade: {trade_order_id} deleted.")
+                    buffer_print(f"✅ (INIT) HEDGE trade {trade_id} details corrected:  [- Realized PnL: {realizedPnl} -] [- New Cummuative Closed PnL {newCumClosedPnl} -]")
+                    is_deleted = delete_row(db_conn,
+                        table_name='opn_trade',
+                        conditions={'child_to': trade_id}
+                    )
+                    if is_deleted:
+                        print(f"✅ Trade (CHILDREN): {trade_order_id} deleted.")
+                        is_deleted = delete_row(db_conn,
+                            table_name='opn_trade',
+                            conditions={'id': trade_id}
+                        )
+                        if is_deleted:
+                            print(f"✅ Trade: {trade_order_id} deleted.")
+                    else:
+                        print(f"⚠️ Error occred while deleting Trade: {trade_order_id} deleted.")
                     return
                 else:
                     buffer_print(f"⚠️ HEDGE trade: {trade_order_id} or {trade_id} has an issue updating to the correct trade details: [- Realized PnL: {realizedPnl} -] [- New Cummuative Closed PnL {newCumClosedPnl} -]")
@@ -1887,6 +1914,7 @@ def main_job(exchange, user_cred_id, verify):
                 def locked_runner():
                     with lock:
                         try:
+                            time.sleep(random.uniform(0.3, 0.6))  # Delay before each request
                             process_single_position(exchange, pos, signal_map, positionst)
                         except Exception as e:
                             buffer_print(f"❌ Error processing position for symbol {symbol}: {e}")
@@ -1898,7 +1926,7 @@ def main_job(exchange, user_cred_id, verify):
                 threading.Thread(target=locked_runner, daemon=False).start()
 
             run_symbol_thread()
-            time.sleep(0.8)  # small throttle
+            time.sleep(1.5)  # small throttle
     except Exception as e:
         buffer_print(f"❌ Error in main_job for [{exchange.apiKey[:6]}...]: {e}")
         traceback.print_exc()
