@@ -785,7 +785,7 @@ def monitor_position_and_reenter(
                 ):
                     buffer_print(f"✅✅ Symbol[{symbol}] re-entry access is unlocked.")
 
-            if safe_reEnterTrade(exchange, trade_id, symbol, order_side, trigger_price, re_entry_size, 'limit', dn_allow_rentry):
+            if safe_reEnterTrade(exchange, trade_id, symbol, order_side, liquidation_price, re_entry_size, 'limit', dn_allow_rentry):
                 if verbose:
                     buffer_print(f"✅✅✅ Re-entered for {symbol} ✅✅✅")
 
