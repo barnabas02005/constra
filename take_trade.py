@@ -239,7 +239,7 @@ def main_job(exchange, user_cred_id, token, verify):
             # thread_safe_print(f"✅ {verify if hasattr(exchange, 'id') else 'Exchange'} → Processing signal: {signal}")
             
             side_n_str = "buy" if side == 0 else "sell"
-            usdt_amount = calculateIntialAmount(usdt_balance_total, leverage)
+            usdt_amount = calculateIntialAmount(usdt_balance_free, leverage)
             
             base_amount = get_base_amount(exchange, symbol, usdt_amount)
             

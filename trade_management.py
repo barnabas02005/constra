@@ -725,9 +725,16 @@ def monitor_position_and_reenter(
         is_hedged = has_opposite_position_open(exchange, symbol, order_side)
         is_limit_hedge = has_limit_hedge_open(db_conn, "hedge_limit", user_cred_id, trade_id, hedge_side_int)
 
+        if not (is_hedged or is_limit_hedge):
+            if update_row(
+                db_conn, 'opn_trade', {'hedge_limit': 0},
+                {'id': ('=', trade_id), 'symbol': symbol}
+            ):
+                print(f"✅ UPDATED 'hedge_limit' to 0 for tradeId: {trade_id}")
+
         if hedged == 1 and not (is_hedged or is_limit_hedge) and hedge_limit == 0:
             limit_hedge_order = place_limit_buy_above_market(
-                exchange, symbol, hedge_order_side, "limit", hedge_order_amount, pip_count=55
+                exchange, symbol, hedge_order_side, "limit", hedge_order_amount, pip_count=100
             )
             if limit_hedge_order:
                 limit_hedge_data = {
@@ -764,6 +771,27 @@ def monitor_position_and_reenter(
                             {'id': ('=', trade_id), 'symbol': symbol}
                         ):
                             buffer_print(f"✅✅ Symbol[{symbol}] re-entry access is unlocked.")
+                    return
+
+        # 🛡 Ensure only one same-side limit/conditional order exists at a time
+        same_side_limit_orders = [
+            o for o in open_orders
+            if o['side'].lower() == same_side and o['type'].lower() in ['limit', 'limitiftouched', 'marketiftouched']
+        ]
+        if len(same_side_limit_orders) > 1:
+            buffer_print(
+                f"[{symbol}] Found {len(same_side_limit_orders)} same-side limit/conditional orders. "
+                "Cancelling extras to enforce single-order rule."
+            )
+            # Keep the first, cancel the rest
+            for extra_order in same_side_limit_orders[1:]:
+                try:
+                    cancel_orphan_orders(exchange, symbol, same_side, trade_id, re_entry_count - 1, 'limitiftouched')
+                    
+                    buffer_print(f"[{symbol}] Cancelled extra {extra_order['type']} order {extra_order['id']}.")
+                    return
+                except Exception as e:
+                    buffer_print(f"[{symbol}] Failed to cancel extra order {extra_order['id']}: {e}")
                     return
 
         # ⏭️ Skip if a valid order already exists
@@ -819,7 +847,7 @@ def monitor_position_and_reenter(
         buffer_print(f"Unexpected error in monitor_position_and_reenter for {symbol}: {e}")
         
         
-def monitor_hedge_position(exchange, user_id, trade_id, symbol, hedged, status, trade_type=0):
+def monitor_hedge_position(exchange, user_id, trade_id, symbol, hedged, status, re_entry_count, trade_type=0):
     # Get hedge limit row data from the database
     # trade_type=0 for buy
     hd_limit_data_raw = fetch_row_details(db_conn, "hedge_limit", user_id, trade_id, trade_type)
@@ -841,6 +869,11 @@ def monitor_hedge_position(exchange, user_id, trade_id, symbol, hedged, status, 
         result = cancel_existing_stop_order(exchange, symbol, order_id, side_cancel)
         if result:
             buffer_print(f"Closed PENDING {side_cancel.upper()} order, since main(SELL-HEDGED) trade is out")
+        
+        same_side = 'buy' if trade_type == 0 else 'sell'
+        result2 = cancel_orphan_orders(exchange, symbol, same_side, trade_id, re_entry_count, 'limitiftouched')
+        if result2:
+            buffer_print(f"Closed (RESULT 2) PENDING {side_cancel.upper()} order, since main(SELL-HEDGED) trade is out")
     
     check_limit_order = check_if_order_filled_and_store(exchange, user_id, trade_id, order_id, symbol, trade_type)
     
@@ -1061,6 +1094,11 @@ def closeAllPosition(exchange, positions, trade_id, symbol):
                     amount=contracts,
                     params={'posSide': 'Short'}
                 )
+                if order:
+                    if update_row(
+                        db_conn, 'opn_trade', {'hedged': 200}, {'id': ('=', trade_id), 'symbol': symbol}
+                    ):
+                        print(f"✅ TRADE DONE ( UPDATED 'hedged' to 200 for tradeId: {trade_id})")
 
         except Exception as e:
             buffer_print(f"⚠️ Failed to close SHORT position on {symbol}: {e}")
@@ -1333,7 +1371,7 @@ def trailing_stop_logic(exchange, position, user_id, trade_id, trade_order_id, t
                     })
         return
     
-    if profit_distance >= trail_theshold:
+    if profit_distance >= trail_theshold and hedge == 0:
         # buffer_print(f"Thresh val: {trail_theshold}")
         new_stop_price_distance = mark_price * profit_target_distance
         new_stop_price = (mark_price - new_stop_price_distance) if side == 'long' else (mark_price + new_stop_price_distance)
@@ -1484,7 +1522,7 @@ def mark_trade_signal_closed_if_position_closed(exchange, strategy_type, symbol,
                         buffer_print(f"✅ HEDGE trade {trade_id} details corrected:  [- Realized PnL: {realizedPnl} -] [- New Cummuative Closed PnL {newCumClosedPnl} -]")
                         is_deleted = delete_row(db_conn,
                             table_name='opn_trade',
-                            conditions={'child_to': trade_id}
+                            conditions={'id': trade_id}
                         )
                         if is_deleted:
                             print(f"✅ Trade (CHILDREN): {trade_order_id} deleted.")
@@ -1788,8 +1826,8 @@ def process_single_position(exchange, pos, signal_map, positionst):
             trail_order_id, trail_thresh, trail_profit_distance, 0.01, 0.1, cum_close_threshold, cum_close_distance, trade_reentry_count, hedged, symbolPosition)
             if strategy_type == "initial":
                 monitor_position_and_reenter(exchange, user_id, trade_id, symbol, pos, trade_live_size, trade_reentry_count, dn_allow_rentry, hedged, hedge_start,hedge_limit, False)
-                if hedge_limit == 1:
-                    monitor_hedge_position(exchange, user_id, trade_id, symbol, hedged, status)
+                if hedged == 1:
+                    monitor_hedge_position(exchange, user_id, trade_id, symbol, hedged, status, trade_reentry_count)
             if execSeqValueFunc is not None and (execSeqValueFunc != execSeqValueDb or execSeqValueDb == ''):
                 update_execSeq = update_row(db_conn,table_name='opn_trade',updates={'execSeq': execSeqValueFunc},conditions={'id': ('=', trade_id), 'symbol': symbol})
                 print(f"ExecSeq: {execSeqValueFunc}")
